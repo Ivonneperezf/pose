@@ -1,19 +1,22 @@
 import { PoseDefinition } from "./types";
 
-// Pose Guerrero I simplificada: un brazo arriba, piernas separadas
 export const warriorPose: PoseDefinition = {
   id: "warrior",
   name: "Guerrero I",
   description: "Brazos levantados, piernas en posición de estocada",
-  globalMarginDeg: 20,
+  // Mantener un margen bajo ayuda a que la detección sea estable, 
+  // pero los rangos internos deben ser amplios.
+  globalMarginDeg: 5, 
   keypoints: [
-    // Codo izquierdo extendido arriba
-    { landmark: 13, relativeTo: 11, anchor: 15, minAngle: 155, maxAngle: 180 },
-    // Codo derecho extendido arriba
-    { landmark: 14, relativeTo: 12, anchor: 16, minAngle: 155, maxAngle: 180 },
-    // Rodilla izquierda doblada (~90°-120°): cadera-rodilla-tobillo
-    { landmark: 25, relativeTo: 23, anchor: 27, minAngle: 80, maxAngle: 130 },
-    // Rodilla derecha más extendida (pierna trasera)
-    { landmark: 26, relativeTo: 24, anchor: 28, minAngle: 150, maxAngle: 180 },
+    // Brazos: Permitimos que estén más doblados (desde 130°)
+    { landmark: 13, relativeTo: 11, anchor: 15, minAngle: 130, maxAngle: 190 },
+    { landmark: 14, relativeTo: 12, anchor: 16, minAngle: 130, maxAngle: 190 },
+    
+    // Rodilla delantera: Ampliamos el rango para que no exija los 90° exactos
+    // (Acepta desde una flexión leve hasta una profunda)
+    { landmark: 25, relativeTo: 23, anchor: 27, minAngle: 60, maxAngle: 150 },
+    
+    // Rodilla trasera: Permitimos que la pierna de atrás esté algo flexionada (desde 120°)
+    { landmark: 26, relativeTo: 24, anchor: 28, minAngle: 120, maxAngle: 190 },
   ],
 };
