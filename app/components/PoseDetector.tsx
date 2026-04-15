@@ -5,7 +5,10 @@ import { PoseLandmarker, FilesetResolver, DrawingUtils } from "@mediapipe/tasks-
 import { validatePose } from "../lib/poseUtils";
 import type { PoseDefinition, ValidationResult } from "../lib/poses/types";
 
-const REPEAT_MESSAGE_COOLDOWN = 5000; // 5 segundos para repetir el mismo mensaje
+// --- CONFIGURACIÓN AJUSTABLE ---
+const REPEAT_MESSAGE_COOLDOWN = 5000; 
+const HOLD_TIME_SECONDS = 10; // <--- DEFINE AQUÍ EL TIEMPO DEL EJERCICIO
+// -------------------------------
 
 const KEYPOINT_HINTS: Record<number, { low: string; high: string }> = {
   13: { low: "Estira un poco tu brazo izquierdo", high: "Relaja tu codo izquierdo" },
@@ -40,13 +43,17 @@ export default function PoseDetector({ pose, onBack }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<PoseStatus>({ result: null, fps: 0 });
+  const [timeLeft, setTimeLeft] = useState<number>(HOLD_TIME_SECONDS);
+  const [isFinished, setIsFinished] = useState(false);
+
   const lastFrameTime = useRef<number>(performance.now());
   const frameCount = useRef<number>(0);
   
   const [isVoiceEnabled, setIsVoiceEnabled] = useState<boolean>(true);
   const lastSpokenHint = useRef<string>("");
-  const lastSpeakTime = useRef<number>(0); // Seguimiento del tiempo
+  const lastSpeakTime = useRef<number>(0);
   const isSpeaking = useRef<boolean>(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const getLatinaVoice = () => {
     const voices = window.speechSynthesis.getVoices();
@@ -60,23 +67,42 @@ export default function PoseDetector({ pose, onBack }: Props) {
 
   const speak = useCallback((text: string) => {
     if (!isVoiceEnabled || isSpeaking.current || typeof window === "undefined" || !window.speechSynthesis) return;
-    
     isSpeaking.current = true;
     const utterance = new SpeechSynthesisUtterance(text);
     const selectedVoice = getLatinaVoice();
     if (selectedVoice) utterance.voice = selectedVoice;
     utterance.lang = "es-MX";
-    utterance.rate = 0.9;
-    utterance.pitch = 1.1;
-    
+    utterance.rate = 1.0;
     utterance.onend = () => { 
       isSpeaking.current = false; 
-      lastSpeakTime.current = Date.now(); // Guardar cuando terminó de hablar
+      lastSpeakTime.current = Date.now();
     };
-    utterance.onerror = () => { isSpeaking.current = false; };
-    
     window.speechSynthesis.speak(utterance);
   }, [isVoiceEnabled]);
+
+  // Manejo del Cronómetro
+  useEffect(() => {
+    if (status.result?.isValid && timeLeft > 0 && !isFinished) {
+      if (timeLeft === HOLD_TIME_SECONDS) speak("¡Posición correcta! Manténla.");
+      
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            setIsFinished(true);
+            speak("¡Tiempo completado! Excelente trabajo.");
+            return 0;
+          }
+          if (prev <= 4) speak((prev - 1).toString()); // Cuenta regresiva final 3, 2, 1
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [status.result?.isValid, isFinished, speak]);
 
   const updateFps = useCallback(() => {
     frameCount.current++;
@@ -146,15 +172,13 @@ export default function PoseDetector({ pose, onBack }: Props) {
             const mirrored = landmarks.map((lm) => ({ x: 1 - lm.x, y: lm.y, z: lm.z, visibility: lm.visibility }));
             const validation = validatePose(mirrored, pose);
             
-            if (isVoiceEnabled) {
-              const currentHint = validation.isValid ? "¡Excelente! Mantén esa posición." : getHint(validation.keypointResults) || "";
-              
+            if (isVoiceEnabled && !isFinished) {
+              const currentHint = validation.isValid ? "" : getHint(validation.keypointResults) || "";
               const now = Date.now();
               const isSameHint = currentHint === lastSpokenHint.current;
               const timeSinceLastSpeak = now - lastSpeakTime.current;
 
               if (currentHint && !isSpeaking.current) {
-                // Hablar si: es un mensaje nuevo O si es el mismo pero ya pasó el tiempo de espera
                 if (!isSameHint || timeSinceLastSpeak > REPEAT_MESSAGE_COOLDOWN) {
                   speak(currentHint);
                   lastSpokenHint.current = currentHint;
@@ -162,29 +186,12 @@ export default function PoseDetector({ pose, onBack }: Props) {
               }
             }
 
-            const failedSet = new Set(validation.keypointResults.filter((r) => !r.passed).map((r) => r.landmark));
-            drawingUtils.drawConnectors(mirrored, PoseLandmarker.POSE_CONNECTIONS, {
-              color: validation.isValid ? "#00d26e" : "#dc3c3c",
-              lineWidth: 5,
-            });
-
-            mirrored.forEach((lm, i) => {
-              const failed = failedSet.has(i);
-              drawingUtils.drawLandmarks([lm], {
-                color: failed ? "#dc3c3c" : "#00d26e",
-                fillColor: failed ? "#dc3c3c" : "#00d26e",
-                radius: failed ? 10 : 6,
-              });
-            });
+            const color = isFinished ? "#00d26e" : (validation.isValid ? "#00d26e" : "#dc3c3c");
+            drawingUtils.drawConnectors(mirrored, PoseLandmarker.POSE_CONNECTIONS, { color, lineWidth: 5 });
 
             const newFps = updateFps();
             if (newFps !== null) currentFps = newFps;
             setStatus({ result: validation, fps: currentFps });
-          }
-        } else {
-          setStatus((prev) => ({ ...prev, result: null }));
-          if (!isSpeaking.current) {
-            lastSpokenHint.current = "";
           }
         }
       }
@@ -196,16 +203,15 @@ export default function PoseDetector({ pose, onBack }: Props) {
       running = false;
       cancelAnimationFrame(rafId);
       landmarker?.close();
-      if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+      if (typeof window !== "undefined") window.speechSynthesis.cancel();
       const stream = videoRef.current?.srcObject as MediaStream;
       stream?.getTracks().forEach(t => t.stop());
     };
-  }, [pose, updateFps, speak, isVoiceEnabled]);
+  }, [pose, updateFps, speak, isVoiceEnabled, isFinished]);
 
   const { result, fps } = status;
   const scorePercent = result ? Math.round(result.score * 100) : 0;
   const hint = result ? getHint(result.keypointResults) : null;
-  const scoreColor = scorePercent >= 85 ? "#00d26e" : scorePercent >= 60 ? "#f0a500" : "#dc3c3c";
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#080808", display: "flex", flexDirection: "column", alignItems: "center", padding: "12px", gap: "12px", fontFamily: "'Space Mono', monospace", boxSizing: "border-box", overflow: "hidden" }}>
@@ -213,46 +219,52 @@ export default function PoseDetector({ pose, onBack }: Props) {
 
       <div style={{ width: "100%", maxWidth: "1600px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button onClick={onBack} style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 10, padding: "8px 16px", color: "#bbb", fontSize: 11, cursor: "pointer" }}>← VOLVER</button>
-        <div style={{ color: "#444", fontSize: 11 }}>{pose.name} Detector</div>
+        
+        {/* TIMER DISPLAY CENTRAL */}
+        <div style={{ 
+          background: timeLeft === 0 ? "#00d26e" : "#1a1a1a", 
+          padding: "8px 30px", 
+          borderRadius: "20px", 
+          fontSize: "24px", 
+          fontWeight: "bold", 
+          color: timeLeft === 0 ? "#000" : "#00d26e",
+          border: "2px solid #00d26e",
+          minWidth: "120px",
+          textAlign: "center"
+        }}>
+          {timeLeft}s
+        </div>
+
         <button
           onClick={() => { if (isVoiceEnabled) window.speechSynthesis.cancel(); setIsVoiceEnabled(!isVoiceEnabled); }}
           style={{ background: isVoiceEnabled ? "rgba(0,210,110,0.1)" : "#1a1a1a", border: `1px solid ${isVoiceEnabled ? "#00d26e55" : "#333"}`, borderRadius: 10, padding: "8px 14px", color: isVoiceEnabled ? "#00d26e" : "#777", fontSize: 12, cursor: "pointer" }}
         >
-          {isVoiceEnabled ? "🔊 AUDIO ON" : "🔇 AUDIO OFF"}
+          {isVoiceEnabled ? "🔊 AUDIO" : "🔇 MUTED"}
         </button>
       </div>
 
       <div style={{ position: "relative", flex: 1, width: "100%", maxWidth: "1600px", borderRadius: 20, overflow: "hidden", background: "#000", border: "1px solid #222", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <canvas ref={canvasRef} style={{ height: "100%", width: "100%", objectFit: "contain", display: "block" }} />
         
-        {result && (
-          <div style={{ position: "absolute", top: 20, left: 20, padding: "12px 28px", borderRadius: 12, fontSize: 16, fontWeight: 800, background: result.isValid ? "rgba(0,210,110,0.8)" : "rgba(220,60,60,0.8)", color: "#fff", textTransform: "uppercase", backdropFilter: "blur(4px)", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
-            {result.isValid ? "✓ EXCELENTE" : "✗ AJUSTA POSE"}
+        {result && !isFinished && (
+          <div style={{ position: "absolute", top: 20, left: 20, padding: "12px 28px", borderRadius: 12, fontSize: 16, fontWeight: 800, background: result.isValid ? "rgba(0,210,110,0.8)" : "rgba(220,60,60,0.8)", color: "#fff", textTransform: "uppercase" }}>
+            {result.isValid ? "✓ MANTENER" : "✗ AJUSTAR"}
           </div>
         )}
-        
-        <div style={{ position: "absolute", bottom: 20, left: 20, fontSize: 12, color: "#fff", background: "rgba(0,0,0,0.6)", padding: "5px 12px", borderRadius: 8 }}>{fps} FPS</div>
-        
-        {result && (
-          <div style={{ position: "absolute", top: 20, right: 20 }}>
-            <svg width="80" height="80" viewBox="0 0 64 64">
-              <circle cx="32" cy="32" r={28} fill="rgba(0,0,0,0.5)" stroke="#333" strokeWidth="4" />
-              <circle cx="32" cy="32" r={28} fill="none" stroke={scoreColor} strokeWidth="6" strokeDasharray={175.9} strokeDashoffset={175.9 - (scorePercent / 100) * 175.9} strokeLinecap="round" transform="rotate(-90 32 32)" style={{ transition: "all 0.4s ease" }} />
-              <text x="32" y="38" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="900">{scorePercent}%</text>
-            </svg>
+
+        {isFinished && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,210,110,0.2)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", backdropFilter: "blur(8px)" }}>
+            <h1 style={{ color: "#fff", fontSize: 64, margin: 0 }}>¡LOGRADO!</h1>
+            <button onClick={() => { setTimeLeft(HOLD_TIME_SECONDS); setIsFinished(false); }} style={{ marginTop: 20, padding: "15px 40px", borderRadius: 30, background: "#00d26e", color: "#000", border: "none", fontWeight: "bold", cursor: "pointer", fontSize: 20 }}>REPETIR</button>
           </div>
         )}
       </div>
 
-      <div style={{ width: "100%", maxWidth: "1600px", background: result?.isValid ? "rgba(0,210,110,0.1)" : "#111", border: `2px solid ${result?.isValid ? "#00d26e55" : "#222"}`, borderRadius: 20, padding: "20px 40px", display: "flex", gap: 25, alignItems: "center", transition: "all 0.3s ease" }}>
-        <div style={{ width: 70, height: 70, borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, background: result?.isValid ? "#00d26e" : "#222", color: result?.isValid ? "#000" : "#555" }}>
-          {!result ? "..." : result.isValid ? "✓" : "!"}
+      <div style={{ width: "100%", maxWidth: "1600px", background: result?.isValid ? "rgba(0,210,110,0.1)" : "#111", border: `2px solid ${result?.isValid ? "#00d26e55" : "#222"}`, borderRadius: 20, padding: "20px 40px", display: "flex", gap: 25, alignItems: "center" }}>
+        <div style={{ fontSize: 32, color: "#fff", flex: 1, fontWeight: 600 }}>
+          {isFinished ? "¡SESIÓN COMPLETADA!" : !result ? "BUSCANDO..." : result.isValid ? "¡ASÍ ESTÁ BIEN!" : <span style={{ color: "#f0a500" }}>{hint?.toUpperCase()}</span>}
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 32, color: "#fff", lineHeight: 1.2, fontWeight: 600 }}>
-            {!result ? "BUSCANDO PERSONA..." : result.isValid ? "¡PERFECTO! MANTENTE AHÍ" : <span style={{ color: "#f0a500" }}>{hint?.toUpperCase() || "AJUSTA TU POSICIÓN"}</span>}
-          </div>
-        </div>
+        <div style={{ fontSize: 24, color: "#00d26e", fontWeight: "bold" }}>{scorePercent}%</div>
       </div>
     </div>
   );
