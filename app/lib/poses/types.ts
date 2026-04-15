@@ -5,15 +5,12 @@ export interface LandmarkPoint {
   visibility?: number;
 }
 
-// Cada punto de referencia tiene un índice de MediaPipe (0-32)
-// y un ángulo o posición esperada con tolerancia
 export interface PoseKeypoint {
-  landmark: number;        // índice MediaPipe
-  relativeTo?: number;     // otro landmark para calcular ángulo
-  anchor?: number;         // tercer punto para ángulo de articulación
-  minAngle?: number;       // ángulo mínimo aceptable (grados)
-  maxAngle?: number;       // ángulo máximo aceptable (grados)
-  // Alternativamente, posición relativa normalizada
+  landmark: number;
+  relativeTo?: number;
+  anchor?: number;
+  minAngle?: number;
+  maxAngle?: number;
   xRange?: [number, number];
   yRange?: [number, number];
 }
@@ -22,14 +19,14 @@ export interface PoseDefinition {
   id: string;
   name: string;
   description: string;
+  icon?: string; // <--- AGREGADO: Propiedad para el emoji o letra
   keypoints: PoseKeypoint[];
-  // Margen global de error en grados (además de min/max por punto)
   globalMarginDeg: number;
 }
 
 export interface ValidationResult {
   isValid: boolean;
-  score: number;           // 0-1
+  score: number;
   keypointResults: {
     landmark: number;
     passed: boolean;
