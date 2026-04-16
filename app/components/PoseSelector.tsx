@@ -1,165 +1,80 @@
 "use client";
 
 import { ALL_POSES } from "../lib/poses";
-import type { PoseDefinition } from "../lib/poses";
+import type { PoseDefinition } from "../lib/poses/types";
 
 interface Props {
   onSelect: (pose: PoseDefinition) => void;
+  onStartRoutine: (poses: PoseDefinition[]) => void;
 }
 
-export default function PoseSelector({ onSelect }: Props) {
+export default function PoseSelector({ onSelect, onStartRoutine }: Props) {
   return (
-    <div
-      style={{
-        width: "100vw",
-        minHeight: "100vh",
-        background: "#080808",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "40px 20px",
-        fontFamily: "'Space Mono', 'Courier New', monospace",
-        boxSizing: "border-box",
-        gap: 48,
-      }}
-    >
-      {/* Header */}
-      <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 12,
-            letterSpacing: "4px",
-            color: "#666",
-            textTransform: "uppercase",
-            marginBottom: 16,
-          }}
-        >
-          Entrenamiento de poses
-        </div>
-        <h1
-          style={{
-            fontSize: 42,
-            fontWeight: 800,
-            color: "#fff",
-            letterSpacing: 1,
-            margin: 0,
-          }}
-        >
-          Selecciona una pose
-        </h1>
-        <p style={{ color: "#444", fontSize: 16, marginTop: 12 }}>
-          {ALL_POSES.length} ejercicios listos para comenzar
-        </p>
+    <div style={{ padding: "40px", background: "#080808", minHeight: "100vh", color: "#fff", fontFamily: "sans-serif" }}>
+      <div style={{ textAlign: "center", marginBottom: "50px" }}>
+        <h1 style={{ fontSize: "3rem", color: "#00d26e", marginBottom: "10px" }}>POSE AI</h1>
+        <p style={{ color: "#666" }}>Selecciona una pose individual o inicia la rutina completa</p>
       </div>
 
-      {/* Grid de poses */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-          gap: 24,
-          width: "100%",
-          maxWidth: 1000,
-        }}
-      >
+      <div style={{ 
+        display: "grid", 
+        gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", 
+        gap: "25px", 
+        maxWidth: "1200px", 
+        margin: "0 auto" 
+      }}>
+        
+        {/* TARJETA ESPECIAL: RUTINA COMPLETA */}
+        <div 
+          onClick={() => onStartRoutine?.(ALL_POSES)}
+          style={{
+            background: "linear-gradient(145deg, #00d26e, #009a50)",
+            padding: "30px",
+            borderRadius: "24px",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            transition: "transform 0.2s",
+            boxShadow: "0 10px 30px rgba(0, 210, 110, 0.3)"
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.05)"}
+          onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
+        >
+          <span style={{ fontSize: "50px", marginBottom: "15px" }}>🚀</span>
+          <h3 style={{ margin: 0, color: "#000", fontSize: "22px" }}>Rutina Completa</h3>
+          <p style={{ color: "rgba(0,0,0,0.7)", textAlign: "center", fontSize: "14px" }}>
+            Todas las poses en secuencia
+          </p>
+        </div>
+
+        {/* MAPEO DE POSES INDIVIDUALES (Tu estética original) */}
         {ALL_POSES.map((pose) => (
-          <button
+          <div 
             key={pose.id}
             onClick={() => onSelect(pose)}
             style={{
-              background: "#111",
-              border: "2px solid #222",
-              borderRadius: 24,
-              padding: "40px 32px",
+              background: "#121212",
+              border: "1px solid #222",
+              padding: "30px",
+              borderRadius: "24px",
               cursor: "pointer",
-              textAlign: "left",
-              transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
-              fontFamily: "inherit",
-              display: "flex",
-              flexDirection: "column",
-              gap: 20,
-              boxShadow: "0 10px 20px rgba(0,0,0,0.2)"
+              transition: "all 0.2s"
             }}
             onMouseEnter={(e) => {
-              const btn = e.currentTarget as HTMLButtonElement;
-              btn.style.borderColor = "#00d26e";
-              btn.style.background = "#161616";
-              btn.style.transform = "translateY(-5px)";
+              e.currentTarget.style.borderColor = "#00d26e";
+              e.currentTarget.style.background = "#181818";
             }}
             onMouseLeave={(e) => {
-              const btn = e.currentTarget as HTMLButtonElement;
-              btn.style.borderColor = "#222";
-              btn.style.background = "#111";
-              btn.style.transform = "translateY(0)";
+              e.currentTarget.style.borderColor = "#222";
+              e.currentTarget.style.background = "#121212";
             }}
           >
-            {/* Ícono dinámico: Lee de la definición de la pose */}
-            <div
-              style={{
-                width: 64,
-                height: 64,
-                borderRadius: 16,
-                background: "rgba(0,210,110,0.1)",
-                border: "2px solid rgba(0,210,110,0.3)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 28,
-                color: "#00d26e",
-                fontWeight: 700,
-              }}
-            >
-              {pose.icon ?? "◈"}
-            </div>
-
-            {/* Info */}
-            <div style={{ flex: 1 }}>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 700,
-                  color: "#fff",
-                  marginBottom: 8,
-                  letterSpacing: 0.5,
-                }}
-              >
-                {pose.name}
-              </div>
-              <div style={{ fontSize: 15, color: "#888", lineHeight: 1.6 }}>
-                {pose.description}
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginTop: 8,
-                paddingTop: 20,
-                borderTop: "1px solid #222"
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "#555",
-                  letterSpacing: 1,
-                  textTransform: "uppercase",
-                  fontWeight: 600
-                }}
-              >
-                {pose.keypoints.length} puntos de control
-              </span>
-              <span style={{ 
-                color: "#00d26e", 
-                fontSize: 24,
-                fontWeight: "bold" 
-              }}>→</span>
-            </div>
-          </button>
+            <div style={{ fontSize: "40px", marginBottom: "15px" }}>{pose.icon || "🧘"}</div>
+            <h3 style={{ margin: "0 0 10px 0", color: "#fff" }}>{pose.name}</h3>
+            <p style={{ margin: 0, color: "#666", fontSize: "14px", lineHeight: "1.4" }}>{pose.description}</p>
+          </div>
         ))}
       </div>
     </div>

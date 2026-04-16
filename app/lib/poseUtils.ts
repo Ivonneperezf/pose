@@ -1,69 +1,70 @@
 import { LandmarkPoint, PoseDefinition, ValidationResult } from "./poses/types";
 
-/** Calcula el ángulo en grados formado por tres puntos: A-B-C donde B es el vértice */
-export function angleBetween(
-  a: LandmarkPoint,
-  b: LandmarkPoint,
-  c: LandmarkPoint
-): number {
-  const radians =
-    Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+export function angleBetween(a: LandmarkPoint, b: LandmarkPoint, c: LandmarkPoint): number {
+  const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
   let deg = Math.abs((radians * 180) / Math.PI);
   if (deg > 180) deg = 360 - deg;
   return deg;
 }
 
-/** Valida los landmarks detectados contra una definición de pose */
-export function validatePose(
-  landmarks: LandmarkPoint[],
-  pose: PoseDefinition
-): ValidationResult {
+function getJointName(index: number): string {
+  const names: Record<number, string> = {
+    11: "hombro izquierdo", 12: "hombro derecho",
+    13: "codo izquierdo", 14: "codo derecho",
+    15: "muñeca izquierda", 16: "muñeca derecha",
+    23: "cadera izquierda", 24: "cadera derecha",
+    25: "rodilla izquierda", 26: "rodilla derecha",
+  };
+  return names[index] || "la articulación";
+}
+
+export function validatePose(landmarks: LandmarkPoint[], pose: PoseDefinition): ValidationResult {
   const keypointResults: ValidationResult["keypointResults"] = [];
-  let passed = 0;
+  const messages: string[] = [];
+  let passedCount = 0;
+
+  if (!pose.keypoints || pose.keypoints.length === 0) return { isValid: false, score: 0, keypointResults: [] };
 
   for (const kp of pose.keypoints) {
-    // Validación por ángulo de articulación
-    if (
-      kp.relativeTo !== undefined &&
-      kp.anchor !== undefined &&
-      kp.minAngle !== undefined &&
-      kp.maxAngle !== undefined
-    ) {
+    const lm = landmarks[kp.landmark];
+    if (!lm || (lm.visibility !== undefined && lm.visibility < 0.5)) continue;
+
+    // VALIDACIÓN POR ÁNGULO
+    if (kp.relativeTo !== undefined && kp.anchor !== undefined && kp.minAngle !== undefined && kp.maxAngle !== undefined) {
       const a = landmarks[kp.relativeTo];
-      const b = landmarks[kp.landmark];
       const c = landmarks[kp.anchor];
+      if (!a || !c) continue;
 
-      if (!a || !b || !c) {
-        keypointResults.push({ landmark: kp.landmark, passed: false, actual: null, expected: [kp.minAngle, kp.maxAngle] });
-        continue;
+      const angle = angleBetween(a, lm, c);
+      // MARGEN MÁS SENSIBLE: Usamos 20 grados de tolerancia si no se especifica
+      const margin = pose.globalMarginDeg || 20; 
+      
+      const isAngleOk = angle >= (kp.minAngle - margin) && angle <= (kp.maxAngle + margin);
+      
+      if (isAngleOk) {
+        passedCount++;
+      } else {
+        const joint = getJointName(kp.landmark);
+        // Indicaciones claras basadas en el ángulo
+        if (angle < kp.minAngle - margin) messages.push(`Extiende más tu ${joint}`);
+        else if (angle > kp.maxAngle + margin) messages.push(`Flexiona más tu ${joint}`);
       }
-
-      const angle = angleBetween(a, b, c);
-      const min = kp.minAngle - pose.globalMarginDeg;
-      const max = kp.maxAngle + pose.globalMarginDeg;
-      const ok = angle >= min && angle <= max;
-      if (ok) passed++;
-      keypointResults.push({ landmark: kp.landmark, passed: ok, actual: angle, expected: [kp.minAngle, kp.maxAngle] });
-
-    // Validación por posición relativa normalizada
-    } else if (kp.xRange || kp.yRange) {
-      const lm = landmarks[kp.landmark];
-      if (!lm) {
-        keypointResults.push({ landmark: kp.landmark, passed: false, actual: null, expected: [0, 0] });
-        continue;
-      }
-      const xOk = kp.xRange ? lm.x >= kp.xRange[0] && lm.x <= kp.xRange[1] : true;
-      const yOk = kp.yRange ? lm.y >= kp.yRange[0] && lm.y <= kp.yRange[1] : true;
-      const ok = xOk && yOk;
-      if (ok) passed++;
-      keypointResults.push({ landmark: kp.landmark, passed: ok, actual: lm.x, expected: kp.xRange ?? [0, 1] });
+    } 
+    // VALIDACIÓN POR POSICIÓN
+    else if (kp.xRange || kp.yRange) {
+      const xOk = kp.xRange ? (lm.x >= kp.xRange[0] && lm.x <= kp.xRange[1]) : true;
+      const yOk = kp.yRange ? (lm.y >= kp.yRange[0] && lm.y <= kp.yRange[1]) : true;
+      if (xOk && yOk) passedCount++;
+      else messages.push(`Mueve tu ${getJointName(kp.landmark)} a la posición marcada`);
     }
   }
 
-  const score = pose.keypoints.length > 0 ? passed / pose.keypoints.length : 0;
+  const score = passedCount / pose.keypoints.length;
   return {
-    isValid: score >= 0.85, // 85% de keypoints correctos = pose válida
+    // UMBRAL DE ÉXITO: 70% para no ser tan estricto
+    isValid: score >= 0.7, 
     score,
     keypointResults,
+    messages: messages.length > 0 ? [messages[0]] : [] // Solo enviamos la corrección más urgente
   };
 }

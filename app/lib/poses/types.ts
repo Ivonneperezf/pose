@@ -19,18 +19,25 @@ export interface PoseDefinition {
   id: string;
   name: string;
   description: string;
-  icon?: string; // <--- AGREGADO: Propiedad para el emoji o letra
+  icon?: string; 
   keypoints: PoseKeypoint[];
   globalMarginDeg: number;
+}
+
+// Extraemos esto para que sea más legible
+export interface KeypointResult {
+  landmark: number;
+  passed: boolean;
+  actual: number | null;
+  expected: [number, number];
 }
 
 export interface ValidationResult {
   isValid: boolean;
   score: number;
-  keypointResults: {
-    landmark: number;
-    passed: boolean;
-    actual: number | null;
-    expected: [number, number];
-  }[];
+  keypointResults: KeypointResult[];
+  /** * Mensajes de retroalimentación detallados (ej: "Extiende más el codo")
+   * que serán utilizados por el motor de voz y la UI.
+   */
+  messages?: string[]; 
 }

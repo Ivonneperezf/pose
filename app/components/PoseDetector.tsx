@@ -5,266 +5,224 @@ import { PoseLandmarker, FilesetResolver, DrawingUtils } from "@mediapipe/tasks-
 import { validatePose } from "../lib/poseUtils";
 import type { PoseDefinition, ValidationResult } from "../lib/poses/types";
 
-// --- CONFIGURACIÓN ---
-const REPEAT_MESSAGE_COOLDOWN = 3000; 
 const HOLD_TIME_SECONDS = 10; 
 
-const KEYPOINT_HINTS: Record<number, { low: string; high: string }> = {
-  13: { low: "Estira un poco tu brazo izquierdo", high: "Relaja tu codo izquierdo" },
-  14: { low: "Estira un poco tu brazo derecho", high: "Relaja tu codo derecho" },
-  11: { low: "Sube tu brazo izquierdo", high: "Baja un poco tu brazo izquierdo" },
-  12: { low: "Sube tu brazo derecho", high: "Baja un poco tu brazo derecho" },
-  25: { low: "Dobla un poco más tu rodilla delantera", high: "Estira un poco tu rodilla delantera" },
-  26: { low: "Trata de estirar tu pierna trasera", high: "Estira la pierna trasera" },
-};
-
-function getHint(keypointResults: ValidationResult["keypointResults"]): string | null {
-  const failed = keypointResults.filter((r) => !r.passed && r.actual !== null);
-  if (failed.length === 0) return null;
-  const first = failed[0];
-  const hints = KEYPOINT_HINTS[first.landmark];
-  if (!hints) return `Ajusta el punto ${first.landmark}`;
-  const mid = (first.expected[0] + first.expected[1]) / 2;
-  return first.actual! < mid ? hints.low : hints.high;
-}
-
 interface Props {
-  pose: PoseDefinition;
+  poses: PoseDefinition[];
   onBack: () => void;
 }
 
-export default function PoseDetector({ pose, onBack }: Props) {
+export default function PoseDetector({ poses, onBack }: Props) {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [isRoutineFinished, setIsRoutineFinished] = useState(false);
+  const activePose = poses[currentStep];
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  const [status, setStatus] = useState<{ result: ValidationResult | null; fps: number }>({ result: null, fps: 0 });
+  const [status, setStatus] = useState<{ result: ValidationResult | null }>({ result: null });
   const [timeLeft, setTimeLeft] = useState<number>(HOLD_TIME_SECONDS);
-  const [isFinished, setIsFinished] = useState(false);
+  const [isPoseComplete, setIsPoseComplete] = useState(false);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState<boolean>(true);
   const [isCameraReady, setIsCameraReady] = useState(false);
 
-  const lastFrameTime = useRef<number>(performance.now());
-  const frameCount = useRef<number>(0);
-  const lastSpokenHint = useRef<string>("");
-  const lastSpeakTime = useRef<number>(0);
-  const isSpeaking = useRef<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastFeedbackTime = useRef<number>(0);
+  const isSpeakingRef = useRef(false);
+  const hasStartedHoldingRef = useRef(false);
 
-  // --- VOZ ---
-  const getLatinaVoice = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    const voices = window.speechSynthesis.getVoices();
-    return (
-      voices.find((v) => v.lang === "es-MX" && v.name.includes("Google")) ||
-      voices.find((v) => v.lang === "es-MX") ||
-      voices.find((v) => v.lang.startsWith("es-")) ||
-      voices[0]
-    );
-  }, []);
-
-  const speak = useCallback((text: string) => {
+  const speak = useCallback((text: string, force = false) => {
     if (!isVoiceEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel(); // Detener cualquier audio previo para evitar bloqueos
+    if (window.speechSynthesis.speaking && !force) return;
+
+    window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    const selectedVoice = getLatinaVoice();
-    if (selectedVoice) utterance.voice = selectedVoice;
     utterance.lang = "es-MX";
-    utterance.rate = 1.1; // Ligeramente más rápido para feedback en tiempo real
-    utterance.onstart = () => { isSpeaking.current = true; };
-    utterance.onend = () => { isSpeaking.current = false; lastSpeakTime.current = Date.now(); };
-    utterance.onerror = () => { isSpeaking.current = false; };
+    utterance.rate = 1.0;
+    
+    utterance.onstart = () => { isSpeakingRef.current = true; };
+    utterance.onend = () => { isSpeakingRef.current = false; };
+
     window.speechSynthesis.speak(utterance);
-  }, [isVoiceEnabled, getLatinaVoice]);
+  }, [isVoiceEnabled]);
 
-  // --- LÓGICA DEL CRONÓMETRO Y DETECCIÓN DE ERRORES ---
+  const handleNextStep = useCallback(() => {
+    if (currentStep < poses.length - 1) {
+      setCurrentStep(prev => prev + 1);
+      setTimeLeft(HOLD_TIME_SECONDS);
+      setIsPoseComplete(false);
+      hasStartedHoldingRef.current = false;
+    } else {
+      setIsRoutineFinished(true);
+      speak("Rutina completada. ¡Excelente trabajo!", true);
+    }
+  }, [currentStep, poses.length, speak]);
+
   useEffect(() => {
-    const hasPerson = !!status.result;
-    const isPoseValid = status.result?.isValid;
-    const canStartTimer = hasPerson && isPoseValid && timeLeft > 0 && !isFinished;
+    if (isCameraReady && activePose && !isRoutineFinished && !isPoseComplete) {
+      const introText = `Posición ${currentStep + 1}. ${activePose.name}. ${activePose.description}`;
+      speak(introText, true);
+    }
+  }, [currentStep, isCameraReady, activePose, isRoutineFinished, isPoseComplete, speak]);
 
-    if (canStartTimer) {
-      if (timeLeft === HOLD_TIME_SECONDS && !isSpeaking.current) {
-        speak("¡Posición correcta! Manténla.");
+  // Lógica del Cronómetro y Mensajes de Estado
+  useEffect(() => {
+    const isPoseValid = status.result?.isValid;
+    const now = Date.now();
+
+    if (isPoseValid && !isPoseComplete && !isRoutineFinished) {
+      if (!hasStartedHoldingRef.current) {
+        speak("¡Bien! Mantén la posición.");
+        hasStartedHoldingRef.current = true;
+      }
+
+      if (!timerRef.current) {
+        timerRef.current = setInterval(() => {
+          setTimeLeft((prev) => {
+            if (prev <= 1) {
+              if (timerRef.current) clearInterval(timerRef.current);
+              timerRef.current = null;
+              setIsPoseComplete(true);
+              speak("¡Logrado!", true);
+              return 0;
+            }
+            const nextTime = prev - 1;
+            if (nextTime <= 5) speak(nextTime.toString(), true);
+            return nextTime;
+          });
+        }, 1000);
+      }
+    } else {
+      // SI HAY ERROR O CAMBIO: Detener el conteo inmediatamente
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
       
-      timerRef.current = setInterval(() => {
-        // Doble verificación: si en el tick del segundo la pose ya no es válida
-        if (!status.result?.isValid) {
-          const errorHint = getHint(status.result?.keypointResults || []) || "Regresa a la posición";
-          speak(errorHint);
-          if (timerRef.current) clearInterval(timerRef.current);
-          return;
-        }
-
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current!);
-            setIsFinished(true);
-            speak("¡Tiempo completado! Excelente trabajo.");
-            return 0;
+      if (!isPoseValid) {
+        hasStartedHoldingRef.current = false;
+        if (!isPoseComplete && isCameraReady && !isSpeakingRef.current) {
+          if (status.result?.messages && status.result.messages.length > 0 && (now - lastFeedbackTime.current > 3500)) {
+            speak(status.result.messages[0]); 
+            lastFeedbackTime.current = now;
           }
-          if (prev <= 4) speak((prev - 1).toString());
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-      
-      // Si la pose se rompe durante el conteo, dar feedback inmediato
-      if (hasPerson && !isPoseValid && timeLeft < HOLD_TIME_SECONDS && timeLeft > 0) {
-        const now = Date.now();
-        if (now - lastSpeakTime.current > 2000) { // Pequeño delay para no aturdir
-          const hint = getHint(status.result?.keypointResults || []) || "Ajusta tu pose";
-          speak(hint);
         }
       }
     }
-
+    
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [status.result?.isValid, !!status.result, isFinished, speak, timeLeft]);
+  }, [status.result, isPoseComplete, isRoutineFinished, isCameraReady, speak, timeLeft]);
 
-  // --- BUCLE DE MEDIAPIPE ---
   useEffect(() => {
     let running = true;
-    let rafId: number;
-    let landmarker: PoseLandmarker | null = null;
-    let stream: MediaStream | null = null;
+    let landmarker: PoseLandmarker;
+    let stream: MediaStream;
 
     async function setup() {
-      try {
-        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
-        landmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numPoses: 1,
-        });
+      const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+      landmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: { 
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", 
+          delegate: "GPU" 
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+      });
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: "user" },
-        });
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play();
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" } });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().then(() => {
             setIsCameraReady(true);
-            loop();
-          };
-        }
-      } catch (err) { console.error("Setup error:", err); }
+            requestAnimationFrame(loop);
+          }).catch(console.warn);
+        };
+      }
     }
 
     function loop() {
       if (!running || !videoRef.current || !landmarker || !canvasRef.current) return;
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d")!;
-
-      if (video.readyState >= 2) {
-        if (canvas.width !== video.videoWidth) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-        }
+      const ctx = canvasRef.current.getContext("2d")!;
+      
+      if (videoRef.current.readyState >= 3) {
+        canvasRef.current.width = videoRef.current.videoWidth;
+        canvasRef.current.height = videoRef.current.videoHeight;
+        
         ctx.save();
-        ctx.translate(canvas.width, 0);
+        ctx.translate(canvasRef.current.width, 0);
         ctx.scale(-1, 1);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoRef.current, 0, 0);
         ctx.restore();
 
-        const result = landmarker.detectForVideo(video, performance.now());
-        
-        if (result.landmarks && result.landmarks.length > 0) {
-          const drawingUtils = new DrawingUtils(ctx);
-          const mirrored = result.landmarks[0].map((lm) => ({ x: 1 - lm.x, y: lm.y, z: lm.z, visibility: lm.visibility }));
-          const validation = validatePose(mirrored, pose);
-
-          // Dibujar esqueleto
-          const color = isFinished ? "#00d26e" : (validation.isValid ? "#00d26e" : "#dc3c3c");
-          drawingUtils.drawConnectors(mirrored, PoseLandmarker.POSE_CONNECTIONS, { color, lineWidth: 5 });
-
-          // Actualizar FPS y Estado
-          frameCount.current++;
-          const now = performance.now();
-          if (now - lastFrameTime.current >= 1000) {
-            const fps = Math.round((frameCount.current * 1000) / (now - lastFrameTime.current));
-            setStatus({ result: validation, fps });
-            frameCount.current = 0;
-            lastFrameTime.current = now;
-          } else {
-            setStatus(prev => ({ ...prev, result: validation }));
-          }
-        } else {
-          setStatus(prev => ({ ...prev, result: null }));
+        const results = landmarker.detectForVideo(videoRef.current, performance.now());
+        if (results.landmarks?.length > 0) {
+          const mirrored = results.landmarks[0].map(lm => ({ x: 1 - lm.x, y: lm.y, z: lm.z, visibility: lm.visibility }));
+          const validation = validatePose(mirrored, activePose);
+          const color = isPoseComplete ? "#00d26e" : (validation.isValid ? "#00d26e" : "#dc3c3c");
+          new DrawingUtils(ctx).drawConnectors(mirrored, PoseLandmarker.POSE_CONNECTIONS, { color, lineWidth: 4 });
+          setStatus({ result: validation });
         }
       }
-      rafId = requestAnimationFrame(loop);
+      if (running) requestAnimationFrame(loop);
     }
 
     setup();
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafId);
-      landmarker?.close();
-      stream?.getTracks().forEach(t => t.stop());
-      if (typeof window !== "undefined") window.speechSynthesis.cancel();
-    };
-  }, [pose]);
-
-  const { result, fps } = status;
+    return () => { running = false; stream?.getTracks().forEach(t => t.stop()); landmarker?.close(); };
+  }, [activePose, isPoseComplete]);
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: "#080808", display: "flex", flexDirection: "column", alignItems: "center", padding: "12px", gap: "12px", fontFamily: "'Space Mono', monospace", boxSizing: "border-box", overflow: "hidden" }}>
-      <video ref={videoRef} style={{ display: "none" }} autoPlay playsInline muted />
+    <div style={{ width: "100vw", height: "100vh", background: "#080808", display: "flex", flexDirection: "column", padding: "16px", boxSizing: "border-box" }}>
+      <video ref={videoRef} style={{ display: "none" }} playsInline muted />
 
-      <div style={{ width: "100%", maxWidth: "1600px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <button onClick={onBack} style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 10, padding: "8px 16px", color: "#bbb", cursor: "pointer" }}>← VOLVER</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <button onClick={onBack} style={{ background: "#1a1a1a", border: "none", borderRadius: 12, padding: "10px 20px", color: "#888", cursor: "pointer" }}>← SALIR</button>
+        <div style={{ textAlign: "center" }}>
+          <span style={{ color: "#555", fontSize: "12px", display: "block" }}>EJERCICIO {currentStep + 1} / {poses.length}</span>
+          <strong style={{ color: "#00d26e", fontSize: "20px" }}>{activePose.name}</strong>
+        </div>
         <div style={{ 
-          background: isFinished ? "#00d26e" : "#1a1a1a", 
-          padding: "8px 30px", 
-          borderRadius: "20px", 
-          fontSize: "24px", 
-          fontWeight: "bold", 
-          color: isFinished ? "#000" : "#00d26e",
-          border: `2px solid #00d26e`,
-          minWidth: "120px",
-          textAlign: "center"
+          background: "#000", border: "2px solid #00d26e", width: "55px", height: "55px", 
+          borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", 
+          color: "#00d26e", fontWeight: "bold", fontSize: "18px" 
         }}>
           {timeLeft}s
         </div>
-        <button onClick={() => { window.speechSynthesis.cancel(); setIsVoiceEnabled(!isVoiceEnabled); }} style={{ background: isVoiceEnabled ? "rgba(0,210,110,0.1)" : "#1a1a1a", border: `1px solid ${isVoiceEnabled ? "#00d26e55" : "#333"}`, borderRadius: 10, padding: "8px 14px", color: isVoiceEnabled ? "#00d26e" : "#777", cursor: "pointer" }}>
-          {isVoiceEnabled ? "🔊 AUDIO" : "🔇 MUTED"}
-        </button>
       </div>
 
-      <div style={{ position: "relative", flex: 1, width: "100%", maxWidth: "1600px", borderRadius: 24, overflow: "hidden", background: "#000", border: "1px solid #222", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        {!isCameraReady && <div style={{ color: "#00d26e", fontSize: "1.2rem", letterSpacing: "2px" }}>INICIALIZANDO SISTEMA...</div>}
-        <canvas ref={canvasRef} style={{ height: "100%", width: "100%", objectFit: "contain", display: isCameraReady ? "block" : "none" }} />
+      <div style={{ position: "relative", flex: 1, borderRadius: 20, overflow: "hidden", background: "#000" }}>
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
         
-        {result && !isFinished && (
-          <div style={{ position: "absolute", top: 20, left: 20, padding: "12px 28px", borderRadius: 12, background: result.isValid ? "rgba(0,210,110,0.9)" : "rgba(220,60,60,0.9)", color: "#fff", fontWeight: "bold", backdropFilter: "blur(4px)" }}>
-            {result.isValid ? "✓ MANTÉN LA POSICIÓN" : "✗ CORRIGE TU POSTURA"}
+        {/* MENSAJE DE ÉXITO VISUAL */}
+        {status.result?.isValid && isCameraReady && !isPoseComplete && (
+          <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", background: "rgba(0, 210, 110, 0.9)", padding: "10px 25px", borderRadius: "10px", color: "#000", fontWeight: "bold", zIndex: 10 }}>
+            ¡Pose correcta! Mantén así
           </div>
         )}
 
-        {isFinished && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,210,110,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", backdropFilter: "blur(12px)", zIndex: 10 }}>
-            <h1 style={{ color: "#fff", fontSize: 80, margin: 0, textShadow: "0 0 20px #00d26e" }}>¡LOGRADO!</h1>
-            <button onClick={() => { setTimeLeft(HOLD_TIME_SECONDS); setIsFinished(false); }} style={{ marginTop: 30, padding: "18px 60px", borderRadius: 40, background: "#00d26e", color: "#000", border: "none", fontWeight: "900", cursor: "pointer", fontSize: 22, boxShadow: "0 10px 30px rgba(0,210,110,0.4)" }}>REPETIR</button>
+        {/* MENSAJE DE ERROR VISUAL */}
+        {status.result && !status.result.isValid && isCameraReady && !isPoseComplete && (
+          <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", background: "rgba(220, 60, 60, 0.9)", padding: "10px 25px", borderRadius: "10px", color: "#fff", fontWeight: "bold", zIndex: 10 }}>
+            {status.result.messages?.[0] || "Ajusta tu posición"}
+          </div>
+        )}
+
+        {isPoseComplete && !isRoutineFinished && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20, backdropFilter: "blur(4px)" }}>
+            <button onClick={handleNextStep} style={{ padding: "18px 45px", background: "#00d26e", border: "none", borderRadius: "30px", fontWeight: "bold", fontSize: "18px", cursor: "pointer" }}>SIGUIENTE POSE →</button>
+          </div>
+        )}
+
+        {isRoutineFinished && (
+          <div style={{ position: "absolute", inset: 0, background: "#080808", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", zIndex: 50 }}>
+            <h1 style={{ color: "#00d26e", fontSize: "36px" }}>¡RUTINA COMPLETADA!</h1>
+            <button onClick={onBack} style={{ marginTop: 25, padding: "12px 40px", borderRadius: 10, border: "1px solid #00d26e", color: "#00d26e", background: "transparent", cursor: "pointer", fontWeight: "bold" }}>VOLVER AL MENÚ</button>
           </div>
         )}
       </div>
 
-      <div style={{ width: "100%", maxWidth: "1600px", background: "#111", border: "1px solid #222", borderRadius: 24, padding: "20px 40px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: 28, color: "#fff", fontWeight: 600 }}>
-          {isFinished ? "SESIÓN COMPLETADA" : !result ? "ESPERANDO USUARIO..." : result.isValid ? "¡ASÍ ESTÁ BIEN!" : <span style={{ color: "#ffcc00" }}>{getHint(result.keypointResults)?.toUpperCase()}</span>}
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 28, color: "#00d26e", fontWeight: "900" }}>{result ? Math.round(result.score * 100) : 0}%</div>
-          <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>PRECISIÓN | {fps} FPS</div>
-        </div>
+      <div style={{ marginTop: "16px", padding: "15px", background: "#111", borderRadius: "15px", color: "#888", textAlign: "center", fontSize: "14px" }}>
+        {activePose.description}
       </div>
     </div>
   );

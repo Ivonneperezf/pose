@@ -1,12 +1,16 @@
-import { tPose } from "./tPose";
-import { warriorPose } from "./warrior";
+import { POSES } from "./definitions";
 import type { PoseDefinition } from "./types";
 
-// Agrega aquí cualquier pose nueva — se refleja automáticamente en la UI
+// ALL_POSES es lo que usa tu PoseSelector.tsx para mostrar las cards.
 export const ALL_POSES: PoseDefinition[] = [
-  tPose,
-  warriorPose,
+  POSES.T_POSE,
+  POSES.ARMS_UP,
+  POSES.RIGHT_ARM_UP
 ];
 
-export { tPose, warriorPose };
-export type { PoseDefinition, ValidationResult } from "./types";
+// Exportaciones individuales por si otros componentes las piden
+export const tPose = POSES.T_POSE;
+export const armsUp = POSES.ARMS_UP;
+export const rightArmUp = POSES.RIGHT_ARM_UP;
+
+export type { PoseDefinition, ValidationResult, LandmarkPoint } from "./types";
