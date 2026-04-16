@@ -19,9 +19,18 @@ export interface PoseDefinition {
   id: string;
   name: string;
   description: string;
-  icon?: string; // <--- AGREGADO: Propiedad para el emoji o letra
+  icon?: string;
   keypoints: PoseKeypoint[];
   globalMarginDeg: number;
+}
+
+// Nueva interfaz para rutinas
+export interface RoutineDefinition {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  poses: PoseDefinition[];
 }
 
 export interface ValidationResult {
