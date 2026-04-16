@@ -45,7 +45,7 @@ export default function PoseDetector({ pose, onBack }: Props) {
 
   const lastFrameTime = useRef<number>(performance.now());
   const frameCount = useRef<number>(0);
-  const lastSpokenHint = useRef<string>("");
+  const lastSpokenText = useRef<string>("");
   const lastSpeakTime = useRef<number>(0);
   const isSpeaking = useRef<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -62,36 +62,48 @@ export default function PoseDetector({ pose, onBack }: Props) {
     );
   }, []);
 
-  const speak = useCallback((text: string) => {
+  const speak = useCallback((text: string, force: boolean = false) => {
     if (!isVoiceEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel(); // Detener cualquier audio previo para evitar bloqueos
+    
+    const now = Date.now();
+    const isDifferentMessage = text !== lastSpokenText.current;
+    
+    // Nueva lógica: Si el mensaje es diferente al último, ignoramos el cooldown y hablamos de inmediato
+    if (!force && !isDifferentMessage && (now - lastSpeakTime.current < REPEAT_MESSAGE_COOLDOWN)) return;
+    if (isSpeaking.current && !force && !isDifferentMessage) return;
+
+    window.speechSynthesis.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
     const selectedVoice = getLatinaVoice();
     if (selectedVoice) utterance.voice = selectedVoice;
     utterance.lang = "es-MX";
-    utterance.rate = 1.1; // Ligeramente más rápido para feedback en tiempo real
-    utterance.onstart = () => { isSpeaking.current = true; };
-    utterance.onend = () => { isSpeaking.current = false; lastSpeakTime.current = Date.now(); };
+    utterance.rate = 1.1;
+    
+    utterance.onstart = () => { 
+      isSpeaking.current = true; 
+      lastSpokenText.current = text;
+      lastSpeakTime.current = Date.now();
+    };
+    utterance.onend = () => { isSpeaking.current = false; };
     utterance.onerror = () => { isSpeaking.current = false; };
+    
     window.speechSynthesis.speak(utterance);
   }, [isVoiceEnabled, getLatinaVoice]);
 
-  // --- LÓGICA DEL CRONÓMETRO Y DETECCIÓN DE ERRORES ---
+  // --- LÓGICA DEL CRONÓMETRO Y ASISTENCIA ACTIVA ---
   useEffect(() => {
     const hasPerson = !!status.result;
     const isPoseValid = status.result?.isValid;
-    const canStartTimer = hasPerson && isPoseValid && timeLeft > 0 && !isFinished;
+    
+    if (isFinished) return;
 
-    if (canStartTimer) {
-      if (timeLeft === HOLD_TIME_SECONDS && !isSpeaking.current) {
-        speak("¡Posición correcta! Manténla.");
+    if (hasPerson && isPoseValid) {
+      if (timeLeft === HOLD_TIME_SECONDS) {
+        speak("¡Posición correcta! Manténla ahí.", true);
       }
-      
+
       timerRef.current = setInterval(() => {
-        // Doble verificación: si en el tick del segundo la pose ya no es válida
         if (!status.result?.isValid) {
-          const errorHint = getHint(status.result?.keypointResults || []) || "Regresa a la posición";
-          speak(errorHint);
           if (timerRef.current) clearInterval(timerRef.current);
           return;
         }
@@ -100,23 +112,25 @@ export default function PoseDetector({ pose, onBack }: Props) {
           if (prev <= 1) {
             clearInterval(timerRef.current!);
             setIsFinished(true);
-            speak("¡Tiempo completado! Excelente trabajo.");
+            speak("¡Tiempo completado! Excelente trabajo.", true);
             return 0;
           }
-          if (prev <= 4) speak((prev - 1).toString());
+          if (prev <= 4) speak((prev - 1).toString(), true);
           return prev - 1;
         });
       }, 1000);
-    } else {
+
+    } else if (hasPerson && !isPoseValid) {
       if (timerRef.current) clearInterval(timerRef.current);
       
-      // Si la pose se rompe durante el conteo, dar feedback inmediato
-      if (hasPerson && !isPoseValid && timeLeft < HOLD_TIME_SECONDS && timeLeft > 0) {
-        const now = Date.now();
-        if (now - lastSpeakTime.current > 2000) { // Pequeño delay para no aturdir
-          const hint = getHint(status.result?.keypointResults || []) || "Ajusta tu pose";
-          speak(hint);
-        }
+      const hint = getHint(status.result?.keypointResults || []) || "Ajusta tu pose";
+      // Si el hint cambió, speak() lo detectará y hablará de inmediato
+      speak(hint);
+      
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (timeLeft < HOLD_TIME_SECONDS) {
+        speak("Vuelve a la posición para continuar.");
       }
     }
 
@@ -181,11 +195,9 @@ export default function PoseDetector({ pose, onBack }: Props) {
           const mirrored = result.landmarks[0].map((lm) => ({ x: 1 - lm.x, y: lm.y, z: lm.z, visibility: lm.visibility }));
           const validation = validatePose(mirrored, pose);
 
-          // Dibujar esqueleto
           const color = isFinished ? "#00d26e" : (validation.isValid ? "#00d26e" : "#dc3c3c");
           drawingUtils.drawConnectors(mirrored, PoseLandmarker.POSE_CONNECTIONS, { color, lineWidth: 5 });
 
-          // Actualizar FPS y Estado
           frameCount.current++;
           const now = performance.now();
           if (now - lastFrameTime.current >= 1000) {
